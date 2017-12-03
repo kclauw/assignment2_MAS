@@ -1,25 +1,51 @@
-import abc
+import abc,six
 import numpy as np
 import math
 from pymc import rbeta
 
-class SelectionStrategy(metaclass=abc.ABCMeta):
+
+
+#ABC now works in python 2 and 3 
+@six.add_metaclass(abc.ABCMeta)
+class SelectionStrategy():
     @abc.abstractmethod
     def execute(self):
         pass
 
 
-
-#http://david.palenica.com/papers/linear-bandit/linear-bandits-NIPS2011-camera-ready.pdf
-
-#https://arxiv.org/pdf/1207.5208.pdf
-
-#KL-UCB
-#https://arxiv.org/pdf/1102.2490.pdf
-
-#UCB-V
+#Tuning bandit algorithms in stochasticenvironments
 #http://certis.enpc.fr/~audibert/ucb_alt.pdf
+class UCBV(SelectionStrategy):
 
+    def __init__(self,c):
+        self.c = c
+
+    def execute(self,experiment,k):
+        #Play each action once
+        for a in range(experiment.n_bandits):
+            if experiment.trials[a] == 0:
+                return a
+
+        confidence_interval = experiment.Q + np.square(np.divide(2*np.log(k+1)* experiment.variance,experiment.trials)) + np.divide(self.c*3*np.log(k),experiment.trials)
+        return np.argmax(confidence_interval) 
+
+
+#The KL-UCB Algorithm for Bounded Stochastic Bandits and Beyond
+#https://arxiv.org/pdf/1102.2490v5.pdf
+class KLUCB(SelectionStrategy):
+
+    def __init__(self,c):
+        self.c = c
+
+    def execute(self,experiment,k):
+        #Play each action once
+        for a in range(experiment.n_bandits):
+            if experiment.trials[a] == 0:
+                return a
+
+        confidence_interval = experiment.Q + (np.log(k+1) + (self.c * np.log(np.log(k+1))))
+
+        return np.argmax(confidence_interval)
 
 class UCB1(SelectionStrategy):
     def execute(self,experiment,k):
@@ -38,13 +64,12 @@ class UCB1Chernoff(SelectionStrategy):
         #Play each action once
         for a in range(experiment.n_bandits):
             if experiment.trials[a] == 0:
+                experiment.Q[a] = 1
                 return a
-
             delta = math.sqrt(1/k+1)
             numerator1 = 2 * experiment.Q[a] * math.log(delta)
             numerator2 = 2* math.log(delta)
             confidence_interval[a] = experiment.Q[a] + math.sqrt(numerator1/experiment.trials[a]) + (numerator2/experiment.trials[a])
-        print (confidence_interval)
         return np.argmax(confidence_interval)
 
 

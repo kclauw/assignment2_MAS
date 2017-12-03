@@ -7,7 +7,7 @@ import math
 import plot
 from pymc import rbeta
 import abc
-from strategy import UCB1,UCB2,Softmax,EpsilonGreedy,Random,EnGreedy,ThompsonSampling,UCB1Chernoff
+from strategy import UCB1,UCB2,Softmax,EpsilonGreedy,Random,EnGreedy,ThompsonSampling,UCB1Chernoff,KLUCB,UCBV
 
 
 import seaborn as sns
@@ -47,7 +47,8 @@ class Experiment(object):
         self.n_bandits = len(self.bandits)
         self.trials = np.zeros(self.n_bandits)
         self.rewards = np.zeros(self.n_bandits)
-        self.Q = np.ones(self.n_bandits)
+        self.Q = np.zeros(self.n_bandits)
+        self.variance = np.zeros(self.n_bandits)
         self.N = 0
         self.optimal_probability = np.max(self.bandits.p)
         self.strategy = strategy
@@ -57,10 +58,14 @@ class Experiment(object):
         self.success = np.zeros(self.n_bandits)
         self.failure = np.zeros(self.n_bandits)
 
+
     def update(self,action,reward):
         self.N += 1
         self.trials[action] += 1
+        #Update mean
         self.Q[action] += (1/float(self.trials[action])) * (reward -self.Q[action])
+        #Update variance
+        self.variance[action] += (reward -self.Q[action]) ** 2
         self.rewards[action] += reward
 
 
@@ -227,15 +232,19 @@ def runExperimentsAll(max_pulls,real_distribution):
 def runExperimentsExtra(max_pulls,real_distribution):
     bandits = Bandits(real_distribution)
     total = np.zeros(max_pulls)
-    labels = ["UCB2","UCB1","EnGreedy","Thompson","Chernoff"]
-    strategies = [UCB2(0.5),UCB1(),EnGreedy(2,0.1),ThompsonSampling(1,0.1),UCB1Chernoff()]
-    rewards = []
-    regret = []
-    for strat in strategies:
-        rew,reg = Experiment(bandits,strat).sample_bandits(max_pulls)
-        rewards.append(rew)
-        regret.append(reg)
+    labels = ["UCB2","UCB1","Chernoff","KL-UCB"]
+    strategies = [UCB2(0.5),UCB1(),UCB1Chernoff(),KLUCB(0)]
+    labels = ["Chernoff","UCBV"]
+    strategies = [UCB1Chernoff(),UCBV(1)]
 
+    labels = ["Chernoff","UCBV"]
+    strategies = [UCB1Chernoff(),UCBV(0)]
+    rewards = [[] for i in range(len(labels))]
+    regret = [[] for i in range(len(labels))]
+    for i,strat in enumerate(strategies):
+        rew,reg = Experiment(bandits,strat).sample_bandits(max_pulls)
+        rewards[i] = rew
+        regret[i] = reg
     #Plot the rewards for each strategy
     for i,r in enumerate(rewards):
         plt.plot(r,label=labels[i])
