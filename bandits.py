@@ -3,9 +3,15 @@ import strategy
 import numpy as np
 import matplotlib.pyplot as plt 
 import seaborn as sns
+import math
 import plot
 from pymc import rbeta
-from strategy import EpsilonGreedy
+import abc
+from strategy import UCB1,UCB2,Softmax,EpsilonGreedy,Random,EnGreedy,ThompsonSampling,UCB1Chernoff
+
+
+import seaborn as sns
+
 
 rand = np.random.rand
 
@@ -24,65 +30,104 @@ class Bandits(object):
         
     def pull( self, i ):
         #i is which arm to pull
-        return rand() < self.p[i]
+        r = rand()
+        return r < self.p[i]
     
     def __len__(self):
         return len(self.p)
 
 
+
+
 class Experiment(object):
-    """
-    Implements a online, learning strategy to solve
-    the Multi-Armed Bandit problem.
-    
-    parameters:
-        bandits: a Bandit class with .pull method
-    
-    methods:
-        sample_bandits(n): sample and train on n pulls.
-    attributes:
-        N: the cumulative number of samples
-        choices: the historical choices as a (N,) array
-        bb_score: the historical score as a (N,) array
-    """
+
+    def __init__(self, bandits,strategy):
+        
+        self.bandits = bandits
+        self.n_bandits = len(self.bandits)
+        self.trials = np.zeros(self.n_bandits)
+        self.rewards = np.zeros(self.n_bandits)
+        self.Q = np.ones(self.n_bandits)
+        self.N = 0
+        self.optimal_probability = np.max(self.bandits.p)
+        self.strategy = strategy
+        self.best_action = -1
+        self.r = np.zeros(self.n_bandits)
+        self.extra_times = 0
+        self.success = np.zeros(self.n_bandits)
+        self.failure = np.zeros(self.n_bandits)
+
+    def update(self,action,reward):
+        self.N += 1
+        self.trials[action] += 1
+        self.Q[action] += (1/float(self.trials[action])) * (reward -self.Q[action])
+        self.rewards[action] += reward
+
+
+    def sample_bandits(self, n=1 ):
+        total_regret = np.zeros(n)
+        total_reward = np.zeros(n)
+        for k in range(n):
+ 
+            #Action selection
+            action = self.strategy.execute(self,k)
+
+
+            #Retrieve reward
+            reward = self.bandits.pull(action)
+
+            #Update values
+            self.update(action,reward)
+
+            #Update total reward and regret
+            regret = self.optimal_probability - self.bandits.p[action]
+            total_regret[k] = regret
+            total_reward[k] = reward
+
+            #Update success failure distributions -> required by Thompson Sampling
+            if reward == 1:
+                self.success[action]+=1
+            else:
+                self.failure[action]+=1
+
+
+
+
+        return np.cumsum(total_reward),np.cumsum(total_regret)
+
+
+class OptimisticInitializationStrategy(object):
     
     def __init__(self, bandits):
         
         self.bandits = bandits
-        n_bandits = len( self.bandits )
-        self.wins = np.zeros( n_bandits )
-        self.trials = np.zeros(n_bandits )
-        self.Q = np.zeros(n_bandits)
+        self.n_bandits = len(self.bandits)
+        self.wins = np.zeros(self.n_bandits)
+        self.trials = np.zeros(self.n_bandits)
+        self.Q = np.ones(self.n_bandits)
         self.N = 0
-        self.choices = []
-        self.bb_score = []
         self.strategy = strategy
+        self.optimal_probability = np.max(self.bandits.p)
+ 
+    def sample_bandits(self, n=1 ):
+        
+        total_regret = np.zeros(n)
+        total_reward = np.zeros(n)
 
-    def sample_bandits( self, n=1 ):
-        
-        bb_score = np.zeros( n )
-        choices = np.zeros( n )
-        
         for k in range(n):
-            #Pick arm according to selection strategy
-            #action = np.argmax( rbeta( 1 + self.wins, 1 + self.trials - self.wins) )
 
-            action = EpsilonGreedy(self.Q,self.N,0.1)
-            print action
-            #sample the chosen bandit
-            result = self.bandits.pull(action)
-            
-            #update priors and score
-            self.wins[action] += result
-            self.trials[action] += 1
-            bb_score[k] = result 
-            self.N += 1
-            choices[k] = action
-            self.Q[action] += (1/self.trials[action]) * (result - self.Q[action])
-    
-        self.bb_score = np.r_[ self.bb_score, bb_score ]
-        self.choices = np.r_[ self.choices, choices ]
-        return choices,bb_score    
+            #Select random action
+            action = np.argmax(self.Q)
+
+            reward = self.bandits.pull(action)
+            #Update Q-values
+            self.trials[action] += 1 # Number of actions
+            self.Q[action] += (1/float(self.trials[action])) * (reward - self.Q[action])
+            regret = self.optimal_probability - self.bandits.p[action]
+            total_regret[k] = regret
+            total_reward[k] = reward
+        return np.cumsum(total_reward),np.cumsum(total_regret)
+
 
 
 class BayesianStrategy( object ):
@@ -112,15 +157,16 @@ class BayesianStrategy( object ):
         self.choices = []
         self.bb_score = []
         self.count = np.zeros(n_bandits)
+        self.optimal_probability = np.max(self.bandits.p)
 
-    def sample_bandits( self, n=1 ):
+    def sample_bandits(self, n=1 ):
         
         bb_score = np.zeros(n)
         choices = np.zeros(n)
         means = np.zeros(n)
         count = np.zeros(n)
-        cummultative_regret = []
-        cummultative_reward = []
+        total_regret = []
+        total_reward = []
 
         for k in range(n):
             #sample from the bandits's priors, and select the largest sample
@@ -134,68 +180,93 @@ class BayesianStrategy( object ):
             self.trials[action] += 1 # Number of actions
             bb_score[ k ] = result 
             self.N += 1
-            choices[ k ] = action
+            choices[k] = action
             best = np.max(self.Q)
             self.Q[action] += (1/self.trials[action]) * (result - self.Q[action])
-            regret = best - result
-            cummultative_regret.append(action)
-            cummultative_reward.append(regret)
+            regret = self.optimal_probability - self.bandits.p[action]
+            total_regret.append(regret)
+            total_reward.append(result)
 
-        self.bb_score = np.r_[ self.bb_score, bb_score ]
-        self.choices = np.r_[ self.choices, choices ]
+        self.bb_score = np.r_[self.bb_score, bb_score]
+        self.choices = np.r_[self.choices, choices]
+        return np.cumsum(total_reward),np.cumsum(total_regret)
 
-        return cummultative_reward,cummultative_regret
 
 
-def regret(probabilities,choices):
-    w_opt = np.max(probabilities)
-    print choices
-    print probabilities[choices]
-    return (w_opt - probabilities[choices]).cumsum()
+def runExperimentsAll(max_pulls,real_distribution):
+    bandits = Bandits(real_distribution)
+    total = np.zeros(max_pulls)
+    labels = ["UCB2","UCB1","Softmax","Epsilon","Random","EnGreedy","Thompson","Chernoff"]
+    strategies = [UCB2(0.5),UCB1(),Softmax(10),EpsilonGreedy(0.2),Random(),EnGreedy(2,0.1),ThompsonSampling(1,0.1),UCB1Chernoff()]
+    rewards = []
+    regret = []
+    for strat in strategies:
+        rew,reg = Experiment(bandits,strat).sample_bandits(max_pulls)
+        rewards.append(rew)
+        regret.append(reg)
+
+    #Plot the rewards for each strategy
+    for i,r in enumerate(rewards):
+        plt.plot(r,label=labels[i])
+        plt.xlabel("Pulls")
+        plt.ylabel("Reward")
+        plt.legend(loc='best', numpoints=1, fancybox=True)
+
+    plt.show()
+
+    #Plot the regret for each strategy
+    for i,re in enumerate(regret):
+        plt.plot(re,label=labels[i])
+        plt.xlabel("Pulls")
+        plt.ylabel("Regret")
+        plt.legend(loc='best', numpoints=1, fancybox=True)
+    plt.show()
+
+
+
+def runExperimentsExtra(max_pulls,real_distribution):
+    bandits = Bandits(real_distribution)
+    total = np.zeros(max_pulls)
+    labels = ["UCB2","UCB1","EnGreedy","Thompson","Chernoff"]
+    strategies = [UCB2(0.5),UCB1(),EnGreedy(2,0.1),ThompsonSampling(1,0.1),UCB1Chernoff()]
+    rewards = []
+    regret = []
+    for strat in strategies:
+        rew,reg = Experiment(bandits,strat).sample_bandits(max_pulls)
+        rewards.append(rew)
+        regret.append(reg)
+
+    #Plot the rewards for each strategy
+    for i,r in enumerate(rewards):
+        plt.plot(r,label=labels[i])
+        plt.xlabel("Pulls")
+        plt.ylabel("Reward")
+        plt.legend(loc='best', numpoints=1, fancybox=True)
+
+    plt.show()
+
+    #Plot the regret for each strategy
+    for i,re in enumerate(regret):
+        plt.plot(re,label=labels[i])
+        plt.xlabel("Pulls")
+        plt.ylabel("Regret")
+        plt.legend(loc='best', numpoints=1, fancybox=True)
+    plt.show()
+    
+
+
 
 
 if __name__ == "__main__":
-    print "test"
+    max_pulls = 10000
     real_distribution = np.array([0.15,0.2,0.1,0.5])
-    bandits = Bandits(real_distribution)
-    strat = Experiment(bandits)
-    strat.sample_bandits(10)
-    _regret = regret(real_distribution,strat.choices)
-    print _regret
+    #runExperimentsAll(max_pulls, real_distribution)
+    runExperimentsExtra(max_pulls, real_distribution)
 
 
 
 
-"""
-
-    total_experiments = 1
-    number_pulls = 5
-    total_bandits = 3
-    
-    avgCumReward = np.zeros(number_pulls)
-    avgCumRegret = np.zeros(total_bandits)
 
 
-    distribution =  np.random.rand(total_bandits)
- 
 
 
-    for s in range(0,total_experiments):
-        distribution = [0.85,0.60,0.75]
-        bandits = Bandits(distribution)
-        count,reward = BayesianStrategy(bandits).sample_bandits(number_pulls)
-        print count
-        print reward
-        avgCumReward += reward
-        avgCount = count
-        _regret = regret(distribution, strat.choices)
- 
-
-    plt.show()
-    sns.set(style="darkgrid")
-    plt.legend() 
-    plt.plot(avgCumReward/np.float(total_experiments),label="eps = 0.0")
-    plt.show()
-    plt.plot(avgCumRegret/np.float(total_experiments),label="eps = 0.1") 
-    plt.show()
-"""
